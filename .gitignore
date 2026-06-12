@@ -1,0 +1,20 @@
+# Environnement virtuel Python
+.venv/
+venv/
+ENV/
+
+# Fichiers de configuration et secrets (CRITIQUE)
+.env
+config.json
+secrets.toml
+
+# Caches Python
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Rapports de scans et fichiers de tests locaux
+reports/
+schema_test.sql
+test_key.txt
