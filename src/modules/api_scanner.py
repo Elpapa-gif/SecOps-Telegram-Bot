@@ -22,7 +22,7 @@ def scan_local_directory(directory_path: str) -> dict:
         lines = result.stdout.strip().split("\n")
         
         for line in lines:
-            if line:
+            if line.strip():  # Évite les lignes vides accidentelles
                 try:
                     secret_data = json.loads(line)
                     clean_secret = {
@@ -47,19 +47,27 @@ def scan_local_directory(directory_path: str) -> dict:
 
 def generate_telegram_report(scan_results: dict) -> str:
     """
-    Génère un texte propre formaté pour le Markdown Telegram (1 seul astérisque pour le gras).
+    Génère un texte propre formaté pour le Markdown Telegram.
     """
     if scan_results["status"] == "error":
-        return f"❌ *Erreur lors du scan de clés :* {scan_results['message']}"
+        return f"❌ **Erreur lors du scan de clés :** {scan_results['message']}"
     
     if scan_results["count"] == 0:
-        return "✅ *Scan Clés API :* Aucun secret ou clé vulnérable détecté dans ce répertoire."
+        return "✅ **Scan Clés API :** Aucun secret ou clé vulnérable détecté dans ce répertoire."
     
-    report = f"⚠️ 🚨 *{scan_results['count']} SECRET(S) DÉTECTÉ(S) !*\n\n"
+    report = f"⚠️ 🚨 **{scan_results['count']} SECRET(S) DÉTECTÉ(S) !**\n\n"
     for idx, secret in enumerate(scan_results["secrets"], 1):
-        report += f"*{idx}. Type :* `{secret['detector']}`\n"
-        report += f"📂 *Fichier :* `{secret['file']}`\n"
-        report += f"🔴 *Vérifié/Actif :* {'Oui (VULNÉRABLE)' if secret['verified'] else 'Potentiel (À vérifier)'}\n\n"
+        report += f"**{idx}. Type :** `{secret['detector']}`\n"
+        report += f"📂 **Fichier :** `{secret['file']}`\n"
+        report += f"🔴 **Vérifié/Actif :** {'Oui (VULNÉRABLE)' if secret['verified'] else 'Potentiel (À vérifier)'}\n\n"
         
     report += "💡 _Mesure de sécurité :_ Supprimez immédiatement ces clés du code source."
     return report
+
+def scan_api(target_path: str) -> str:
+    """
+    Fonction passerelle appelée par main.py.
+    Exécute le scan local et retourne directement le rapport Telegram formaté.
+    """
+    resultats = scan_local_directory(target_path)
+    return generate_telegram_report(resultats)

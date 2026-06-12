@@ -1,76 +1,102 @@
 import os
 import re
 
-def analyze_sql_file(file_path: str) -> dict:
+def analyze_single_sql_file(file_path: str) -> list:
     """
-    Analyse un fichier SQL à la recherche de failles d'injection ou d'un manque de RLS.
+    Analyse un fichier SQL unique à la recherche de vulnérabilités statiques
+    et retourne la liste des failles trouvées.
     """
-    if not os.path.exists(file_path):
-        return {"status": "error", "message": f"Le fichier {file_path} n'existe pas."}
-
+    findings = []
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
-
-        issues = []
-        
-        # 1. Détecter la création de tables
-        tables = re.findall(r"create\s+table\s+(\w+)", content, re.IGNORECASE)
-        
-        # 2. Chercher les activations de RLS : "ALTER TABLE ... ENABLE ROW LEVEL SECURITY"
-        rls_enabled_tables = re.findall(r"alter\s+table\s+(\w+)\s+enable\s+row\s+level\s+security", content, re.IGNORECASE)
-        
-        # Vérifier quelles tables n'ont pas la RLS activée
-        for table in tables:
-            if table not in rls_enabled_tables:
-                issues.append({
-                    "type": "RLS_MANQUANTE",
-                    "severity": "HAUTE",
-                    "details": f"La table `{table}` est créée mais le Row Level Security (RLS) n'est pas activé."
-                })
-
-        # 3. Détecter des patterns d'injections SQL potentiels (ex: concaténation dynamique dans des fonctions/procédures)
-        # On cherche des structures suspectes comme l'exécution de chaînes assemblées avec || ou %
-        injection_patterns = [
-            (r"execute\s+immediate\s+.*\|\|", "Concaténation dynamique suspecte dans EXECUTE IMMEDIATE."),
-            (r"query\s*:=\s*.*['\"].*\|\|", "Construction de requête SQL par concaténation de chaînes.")
-        ]
-
-        for pattern, desc in injection_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                issues.append({
-                    "type": "INJECTION_SQL_POTENTIELLE",
-                    "severity": "CRITIQUE",
-                    "details": desc
-                })
-
-        return {
-            "status": "success",
-            "file": os.path.basename(file_path),
-            "issues_count": len(issues),
-            "issues": issues
-        }
-
+            lines = content.split('\n')
+            
+            for index, line in enumerate(lines):
+                # 1. Détection de concaténation brute (vulnérabilité SQLi potentielle dans les fonctions/procédures)
+                if re.search(r"\blike\b\s*['\"].*%.*['\"]\s*\+\s*\w+", line, re.IGNORECASE) or \
+                   re.search(r"EXEC\s*\(\s*['\"].*?\+\s*\w+", line, re.IGNORECASE):
+                    findings.append({
+                        "line": index + 1,
+                        "type": "Injection SQL Potentielle",
+                        "detail": "Concaténation brute de variables détectée dans une requête dynamique.",
+                        "severity": "HAUTE"
+                    })
+                
+                # 2. Détection d'absence de RLS (Row Level Security) sur PostgreSQL
+                if "CREATE TABLE" in line.upper() and not any("ALTER TABLE" in l.upper() and "ENABLE ROW LEVEL SECURITY" in l.upper() for l in lines):
+                    # Évite de dupliquer pour chaque table, on remonte l'alerte de configuration globale
+                    if not any(f["type"] == "Absence de RLS" for f in findings):
+                        findings.append({
+                            "line": index + 1,
+                            "type": "Absence de RLS",
+                            "detail": "Des tables sont créées sans politique de Row Level Security (RLS) globale détectée.",
+                            "severity": "MOYENNE"
+                        })
     except Exception as e:
-        return {"status": "error", "message": f"Impossible de lire ou d'analyser le fichier : {str(e)}"}
+        pass
+    return findings
 
-def generate_sql_report(analysis: dict) -> str:
+def generate_payloads(finding_type: str) -> str:
     """
-    Génère le rapport formaté pour Telegram.
+    Génère des commandes et payloads d'exploitation adaptés au type de faille.
     """
-    if analysis["status"] == "error":
-        return f"❌ *Erreur d'analyse SQL :* {analysis['message']}"
+    if finding_type == "Injection SQL Potentielle":
+        return (
+            "🎯 **Payloads d'exploitation suggérés :**\n"
+            "• *Auth Bypass:* `' OR '1'='1` ou `' OR 1=1 --`\n"
+            "• *Union Based:* `' UNION SELECT username, password FROM users --`\n"
+            "• *Commande automatique (sqlmap) :*\n"
+            "`sqlmap -u \"URL_CIBLE\" --forms --batch --crawl=2 --dbs`"
+        )
+    elif finding_type == "Absence de RLS":
+        return (
+            "⚔️ **Vecteur Red Team :**\n"
+            "L'absence de RLS permet à n'importe quel utilisateur authentifié de lire "
+            "les lignes des autres utilisateurs si l'application ne filtre pas strictement l'ID en amont (vulnérabilité BOLA/IDOR)."
+        )
+    return "🔍 Analyse manuelle recommandée."
+
+def scan_sql(target_path: str) -> str:
+    """
+    Scanne intelligemment un fichier SQL unique OU parcourt récursivement un dossier complet.
+    """
+    sql_files = []
+
+    # Correction du bug "Is a directory" : Gestion dynamique du chemin passé
+    if os.path.isdir(target_path):
+        for root, _, files in os.walk(target_path):
+            for file in files:
+                if file.endswith('.sql'):
+                    sql_files.append(os.path.join(root, file))
+    elif os.path.isfile(target_path) and target_path.endswith('.sql'):
+        sql_files.append(target_path)
+    else:
+        return "❌ Le chemin fourni n'est ni un fichier SQL valide, ni un dossier."
+
+    if not sql_files:
+        return f"ℹ️ Aucun fichier `.sql` trouvé dans `{target_path}`."
+
+    report = f"💉 **Rapport d'Audit Smart SQL :** `{os.path.basename(target_path)}` 💉\n"
+    report += f"📁 *Fichiers analysés : {len(sql_files)}*\n\n"
+    report += "=======================================\n\n"
+
+    total_vulns = 0
+    for file_path in sql_files:
+        relative_name = os.path.relpath(file_path, target_path) if os.path.isdir(target_path) else os.path.basename(file_path)
+        findings = analyze_single_sql_file(file_path)
         
-    if analysis["issues_count"] == 0:
-        return f"✅ *Audit SQL ({analysis['file']}) :* Aucune vulnérabilité flagrante ou absence de RLS détectée."
-        
-    report = f"📊 *Rapport d'Audit Base de Données ({analysis['file']}) :*\n"
-    report += f"⚠️ *{analysis['issues_count']} alerte(s) de sécurité identifiée(s).*\n\n"
-    
-    for idx, issue in enumerate(analysis["issues"], 1):
-        emoji = "🚨" if issue["severity"] == "CRITIQUE" else "🔥"
-        report += f"{emoji} *{idx}. [{issue['type']}]* - Priorité : `{issue['severity']}`\n"
-        report += f"💡 {issue['details']}\n\n"
-        
-    report += "🛠️ _Remédiation :_ Activez systématiquement la RLS (`ALTER TABLE t ENABLE ROW LEVEL SECURITY;`) et utilisez exclusivement des requêtes préparées."
+        if findings:
+            total_vulns += len(findings)
+            report += f"📄 **Fichier :** `{relative_name}`\n"
+            for f in findings:
+                report += f"• **Ligne {f['line']}** : [{f['severity']}] *{f['type']}*\n"
+                report += f"  _Détail : {f['detail']}_\n\n"
+                # Ajout des payloads d'attaque "On-the-Fly"
+                report += f"{generate_payloads(f['type'])}\n"
+                report += "---------------------------------------\n"
+
+    if total_vulns == 0:
+        return f"✅ **Audit SQL terminé :** Aucun indicateur de faille classique ou d'absence de RLS détecté dans les {len(sql_files)} fichier(s)."
+
     return report
